@@ -72,7 +72,7 @@ public:
     shrink_samples_   = this->get_parameter("shrink_samples").as_int();
     base_frame_       = this->get_parameter("base_frame").as_string();
     publish_debug_    = this->get_parameter("publish_terrain_debug").as_bool();
-    cloud_stride_     = std::max(1, this->get_parameter("cloud_stride").as_int());
+    cloud_stride_     = std::max(1, (int)this->get_parameter("cloud_stride").as_int());
 
     double angle_deg  = this->get_parameter("ground_angle_thresh_deg").as_double();
     cos_ground_thresh_= std::cos(angle_deg * M_PI / 180.0);
@@ -124,6 +124,14 @@ public:
     boundary_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
         "/corridor/boundary_cloud", rclcpp::SensorDataQoS());
 
+    // Boundary crossing check runs independently of the camera at 10 Hz.
+    // The old approach gated it inside imageCb behind left_pts.size() >= 2,
+    // which meant it only fired when path poses were visible in the camera FOV.
+    // This timer uses only the latest path + TF — no image or terrain needed.
+    boundary_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(100),
+        std::bind(&PathCorridorSegmenter::boundaryCb, this));
+
     RCLCPP_INFO(this->get_logger(),
         "PathCorridorSegmenter ready. backend=%s, corridor=%.1fm, ground_thresh=%.0f°, "
         "bilateral σ_s=%.1f σ_d=%.2fm",
@@ -139,6 +147,58 @@ private:
   void pathCb(const nav_msgs::msg::Path::SharedPtr msg) {
     std::lock_guard<std::mutex> lk(path_mutex_);
     latest_path_ = msg;
+  }
+
+  // Boundary crossing check — runs at 10 Hz, fully camera-independent.
+  // Builds the corridor polygon directly from the latest path poses in world XY
+  // (no projection, no terrain data, no image required). This means the vehicle
+  // is monitored even when the camera is facing away from the path.
+  void boundaryCb() {
+    nav_msgs::msg::Path::SharedPtr path;
+    {
+      std::lock_guard<std::mutex> lk(path_mutex_);
+      path = latest_path_;
+    }
+
+    std_msgs::msg::Bool out;
+    out.data = false;
+
+    if (!path || (int)path->poses.size() < 2) {
+      safety_pub_->publish(out);
+      return;
+    }
+
+    auto & poses = path->poses;
+    int N = (int)poses.size();
+
+    std::vector<cv::Point2f> left_world, right_world;
+    left_world.reserve(N);
+    right_world.reserve(N);
+
+    for (int i = 0; i < N; i++) {
+      double dx, dy;
+      if (i < N - 1) {
+        dx = poses[i+1].pose.position.x - poses[i].pose.position.x;
+        dy = poses[i+1].pose.position.y - poses[i].pose.position.y;
+      } else {
+        dx = poses[i].pose.position.x - poses[i-1].pose.position.x;
+        dy = poses[i].pose.position.y - poses[i-1].pose.position.y;
+      }
+      double yaw = std::atan2(dy, dx);
+      // Use the nominal max_half_ (not shrunk) — this is a safety boundary,
+      // not a visual one. Shrinking is for obstacle avoidance; the safety zone
+      // is the full declared corridor width.
+      left_world.emplace_back(
+          (float)(poses[i].pose.position.x - max_half_ * std::sin(yaw)),
+          (float)(poses[i].pose.position.y + max_half_ * std::cos(yaw)));
+      right_world.emplace_back(
+          (float)(poses[i].pose.position.x + max_half_ * std::sin(yaw)),
+          (float)(poses[i].pose.position.y - max_half_ * std::cos(yaw)));
+    }
+
+    checkBoundaryCrossing(left_world, right_world,
+                          path->header.frame_id,
+                          this->get_clock()->now());
   }
 
   void infoCb(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
@@ -315,6 +375,24 @@ private:
       }
     }
 
+    // ── Extend corridor polygon to image bottom (near-field fix) ──────────
+    // Nav2's nearest path pose is typically 0.5–2 m ahead of the robot.
+    // That pose projects to somewhere in the lower portion of the image,
+    // leaving the bottom strip (ground immediately in front of the camera)
+    // outside the polygon → classified black even though it is the nearest
+    // driveable surface. Fix: find the bottommost (highest v) point in each
+    // boundary and extend straight down to the image edge.
+    if (!left_pts.empty() && !right_pts.empty()) {
+      cv::Point near_l = left_pts[0], near_r = right_pts[0];
+      for (const auto & p : left_pts)  if (p.y > near_l.y) near_l = p;
+      for (const auto & p : right_pts) if (p.y > near_r.y) near_r = p;
+      // Only extend if the polygon doesn't already reach the bottom 5 rows.
+      if (near_l.y < height_ - 5 || near_r.y < height_ - 5) {
+        left_pts.push_back(cv::Point(near_l.x, height_ - 1));
+        right_pts.push_back(cv::Point(near_r.x, height_ - 1));
+      }
+    }
+
     if (left_pts.size() < 2) return;
 
     // ── Build corridor polygon mask ──────────────────────────────────────
@@ -326,12 +404,6 @@ private:
       polygon.insert(polygon.end(), right_pts.rbegin(), right_pts.rend());
       std::vector<std::vector<cv::Point>> contours = {polygon};
       cv::fillPoly(corridor_mask, contours, cv::Scalar(255));
-    }
-
-    // ── Boundary crossing check ──────────────────────────────────────────
-    if (left_world.size() >= 2) {
-      checkBoundaryCrossing(left_world, right_world,
-                            path->header.frame_id, msg->header.stamp);
     }
 
     // ── Debug publish (corridor-masked) ──────────────────────────────────
@@ -655,6 +727,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr             safety_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr   cloud_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr   boundary_pub_;
+  rclcpp::TimerBase::SharedPtr                                  boundary_timer_;
 
   tf2_ros::Buffer            tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
