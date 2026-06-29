@@ -56,6 +56,7 @@ void PathCorridorLayer::onInitialize()
     std::chrono::milliseconds(100),
     std::bind(&PathCorridorLayer::checkDeviationAndStatus, this));
 
+  enabled_ = true;
   current_ = true;
 }
 
