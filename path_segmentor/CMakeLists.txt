@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.18)
 
 # NOTE: project() declares CXX only. CUDA is enabled conditionally below so the
 # package configures and builds on hosts with no CUDA toolchain (simulation).
-project(path_segmentor CXX)
+project(path_segmentor CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,15 +35,27 @@ endif()
 
 # ── ROS / ament dependencies ──────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(image_geometry REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(nav2_costmap_2d REQUIRED)
+find_package(nav2_msgs REQUIRED)
+
+# ── Custom messages ───────────────────────────────────────────────────────────
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/CorridorShrinkStatus.msg"
+  DEPENDENCIES std_msgs
+)
+rosidl_get_typesupport_target(cpp_typesupport_target "${PROJECT_NAME}" "rosidl_typesupport_cpp")
 
 # ── OpenCV resolution ──────────────────────────────────────────────────────
 # On the Jetson the custom CUDA-enabled 4.10 build lives at /opt/opencv4.10 and
@@ -127,12 +139,37 @@ if(OCV_RPATH)
   )
 endif()
 
+# ── Corridor costmap layer plugin (shared library) ────────────────────────────
+add_library(path_corridor_layer SHARED
+  src/path_corridor_layer.cpp
+)
+target_include_directories(path_corridor_layer PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+ament_target_dependencies(path_corridor_layer
+  rclcpp
+  nav_msgs
+  std_msgs
+  geometry_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  pluginlib
+  nav2_costmap_2d
+  nav2_msgs
+)
+target_link_libraries(path_corridor_layer "${cpp_typesupport_target}")
+pluginlib_export_plugin_description_file(nav2_costmap_2d path_corridor_layer_plugin.xml)
+
 # ── Install ─────────────────────────────────────────────────────────────────
-install(TARGETS path_corridor_segmenter
+install(TARGETS path_corridor_segmenter path_corridor_layer
   DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
+)
+install(FILES path_corridor_layer_plugin.xml
+  DESTINATION share/${PROJECT_NAME}
 )
 
 ament_package()

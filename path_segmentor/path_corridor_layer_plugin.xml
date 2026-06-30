@@ -1,0 +1,12 @@
+<library path="path_corridor_layer">
+  <class name="path_segmentor/PathCorridorLayer"
+         type="path_segmentor::PathCorridorLayer"
+         base_class_type="nav2_costmap_2d::Layer">
+    <description>
+      Marks all costmap cells outside the /plan corridor as LETHAL_OBSTACLE.
+      Corridor half-width is runtime-adjustable via /corridor/width_cmd (clamped to
+      [min_half_width, corridor_half_width]). Publishes /corridor/plan_deviation (Bool)
+      and /corridor/shrink_status (CorridorShrinkStatus) at 10 Hz.
+    </description>
+  </class>
+</library>
