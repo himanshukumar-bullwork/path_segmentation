@@ -9,7 +9,6 @@
 #include <nav_msgs/msg/path.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32.hpp>
-
 #include "path_segmentor/msg/corridor_shrink_status.hpp"
 
 namespace path_segmentor {

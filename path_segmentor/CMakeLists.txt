@@ -48,6 +48,7 @@ find_package(image_geometry REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
+find_package(nav2_msgs REQUIRED)
 
 # ── Custom messages ───────────────────────────────────────────────────────────
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -155,6 +156,7 @@ ament_target_dependencies(path_corridor_layer
   tf2_geometry_msgs
   pluginlib
   nav2_costmap_2d
+  nav2_msgs
 )
 target_link_libraries(path_corridor_layer "${cpp_typesupport_target}")
 pluginlib_export_plugin_description_file(nav2_costmap_2d path_corridor_layer_plugin.xml)
